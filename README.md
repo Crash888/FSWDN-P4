@@ -143,7 +143,9 @@ This task required a few steps:
 
 ### Task 4: Add a Task - Featured Speaker
 
-  For this task logic was added to the createSession Endpoint to check if the speaker was speaking at any other sessions in the conference.  If so, a Memcache entry was created using the key 'CONFERENCE\_FEATURED\_SPEAKERS'.
+  For this task logic was added to the createSession Endpoint to check if the speaker was speaking at any other sessions in the conference.  If this is true then a new Push Queue task job was addedd to create a Memcache entry with the key 'CONFERENCE\_FEATURED\_SPEAKERS'.
+  
+  The task url is '/tasks/set_featured_speaker'.
 
   In addition, a new Endpoint was created: 'getFeaturedSpeaker' which returns the featured speaker, if there is one.     
 

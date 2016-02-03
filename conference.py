@@ -681,12 +681,15 @@ class ConferenceApi(remote.Service):
                 filter(Session.speaker==data['speaker']). \
                 fetch()
             conf = c_key.get()
-
-            # update the MEMCACHE entry
-            speaker_announcement = FEATURED_SPEAKERS_TPL % (
-                conf.name, data['speaker'], ', '.join(speaker_session.name for speaker_session in speaker_sessions))
-            memcache.set(MEMCACHE_CONFERENCE_FEATURED_SPEAKERS_KEY, speaker_announcement)            
-
+        
+        speaker_announcement = FEATURED_SPEAKERS_TPL % (
+            conf.name, data['speaker'], ', '.join(speaker_session.name for speaker_session in speaker_sessions))
+        
+        taskqueue.add(params={'announcement': speaker_announcement,
+            'memcache_key': MEMCACHE_CONFERENCE_FEATURED_SPEAKERS_KEY},
+            url='/tasks/set_featured_speaker'
+        )
+        
         return request
 
 
