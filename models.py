@@ -111,25 +111,25 @@ class ConferenceQueryForms(messages.Message):
 
 class Session(ndb.Model):
     """Session -- Session object"""
-    name            = ndb.StringProperty(required=True)
-    highlights      = ndb.StringProperty()
-    speaker         = ndb.StringProperty(required=True)
-    duration        = ndb.IntegerProperty()
-    typeOfSession   = ndb.StringProperty()
-    date            = ndb.DateProperty()
-    startTime       = ndb.TimeProperty()
+    name              = ndb.StringProperty(required=True)
+    highlights        = ndb.StringProperty()
+    websafeSpeakerKey = ndb.StringProperty()
+    duration          = ndb.IntegerProperty()
+    typeOfSession     = ndb.StringProperty()
+    date              = ndb.DateProperty()
+    startTime         = ndb.TimeProperty()
     
 class SessionForm(messages.Message):
     """SessionForm -- Session outbound form message"""
-    name            = messages.StringField(1)
-    highlights      = messages.StringField(2)
-    speaker         = messages.StringField(3)
-    duration        = messages.IntegerField(4, variant=messages.Variant.INT32)
-    typeOfSession   = messages.StringField(5)
-    date            = messages.StringField(6)
-    startTime       = messages.StringField(7)
-    confWebsafeKey  = messages.StringField(8)
-    websafeKey      = messages.StringField(9)
+    name              = messages.StringField(1)
+    highlights        = messages.StringField(2)
+    websafeSpeakerKey = messages.StringField(3)
+    duration          = messages.IntegerField(4, variant=messages.Variant.INT32)
+    typeOfSession     = messages.StringField(5)
+    date              = messages.StringField(6)
+    startTime         = messages.StringField(7)
+    confWebsafeKey    = messages.StringField(8)
+    websafeKey        = messages.StringField(9)
 
 class SessionForms(messages.Message):
     """SessionForms -- multiple Session outbound form message"""
@@ -161,7 +161,7 @@ class WishlistForms(messages.Message):
 class Speaker(ndb.Model):
     """Speaker -- Speaker object"""
     name  = ndb.StringProperty(required=True)
-    email = ndb.StringProperty()
+    email = ndb.StringProperty(required=True)
     sessionKeysToSpeak = ndb.StringProperty(repeated=True)
 
 

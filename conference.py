@@ -134,6 +134,14 @@ SPEAKER_POST_REQUEST = endpoints.ResourceContainer(
 class ConferenceApi(remote.Service):
     """Conference API v0.1"""
 
+    def _getAuthUser(self):
+        """ Make sure user is logged in and return the user record """ 
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+        
+        return user
+    
 # - - - Conference objects - - - - - - - - - - - - - - - - -
 
     def _copyConferenceToForm(self, conf, displayName):
@@ -157,11 +165,9 @@ class ConferenceApi(remote.Service):
     def _createConferenceObject(self, request):
         """Create or update Conference object, returning ConferenceForm/request."""
         # preload necessary data items
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
-
+        
         if not request.name:
             raise endpoints.BadRequestException("Conference 'name' field required")
 
@@ -208,9 +214,8 @@ class ConferenceApi(remote.Service):
 
     @ndb.transactional()
     def _updateConferenceObject(self, request):
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        
+        user = self._getAuthUser()
         user_id = getUserId(user)
 
         # copy ConferenceForm/ProtoRPC Message into dict
@@ -278,9 +283,7 @@ class ConferenceApi(remote.Service):
     def getConferencesCreated(self, request):
         """Return conferences created by user."""
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
 
         # create ancestor query for all key matches for this user
@@ -384,10 +387,8 @@ class ConferenceApi(remote.Service):
     def _getProfileFromUser(self):
         """Return user Profile from datastore, creating new one if non-existent."""
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
-
+        user = self._getAuthUser()
+        
         # get Profile from datastore
         user_id = getUserId(user)
         p_key = ndb.Key(Profile, user_id)
@@ -611,18 +612,15 @@ class ConferenceApi(remote.Service):
     def _createSessionObject(self, request):
         """Create Session object, returning SessionForm/request."""
         
-        # preload necessary data items
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
-        
+        user = self._getAuthUser()
         user_id = getUserId(user)
 
         if not request.name:
             raise endpoints.BadRequestException("Session 'name' field required")
-
-        if not request.speaker:
-            raise endpoints.BadRequestException("Session 'speaker' field required")
+ 
+        speaker = None;
+        #if not request.speaker:
+        #    raise endpoints.BadRequestException("Session 'speaker' field required")
 
         # copy SessionForm/ProtoRPC Message into dict
         data = {field.name: getattr(request, field.name) for field in request.all_fields()}
@@ -634,6 +632,18 @@ class ConferenceApi(remote.Service):
         # convert startTime from string to Time object;
         if data['startTime']:
             data['startTime'] = datetime.strptime(data['startTime'][:5], "%H:%M").time()
+        
+        if data['websafeSpeakerKey']:
+            
+            try: 
+                sp_key = ndb.Key(urlsafe=data['websafeSpeakerKey'])
+            except Exception, e:
+                raise endpoints.NotFoundException ("invalid websafeSpeakerKey")
+
+            speaker = sp_key.get()
+            
+            if not speaker:
+                raise endpoints.BadRequestException("Cannot locate speaker")
 
         # use the Conference Key to generate a ID for the Session
         # create Session key with Conference as the parent
@@ -647,50 +657,22 @@ class ConferenceApi(remote.Service):
         del data['confWebsafeKey']
         del data['websafeKey']
         
-        # find a Speaker record 
-        sp_key = ndb.Key(Speaker, data['speaker'])
-        speaker = sp_key.get()
         
-        # create new Speaker if not there
-        if not speaker:
-            speaker = Speaker(
-                key = sp_key,
-                name = data['speaker'],
+        # create Session & create/update speaker if available
+        session = Session(**data)
+        session.put()
+        
+        if speaker:
+            # append the Session that the Speaker will speak
+            speaker.sessionKeysToSpeak.append(s_key.urlsafe())
+            speaker.put()
+        
+            taskqueue.add(params={'conference_key': c_key.urlsafe(),
+                'speaker_key': data['websafeSpeakerKey']},
+                url='/tasks/set_featured_speaker'
             )
-
-        # append the Session that the Speaker will speak
-        speaker.sessionKeysToSpeak.append(s_key.urlsafe())
         
-        # create Session & create/update Speaker
-        Session(**data).put()
-        speaker.put()
-        
-        # Check number of sessions for the Speaker to see if the
-        # MEMCACHE entry should be updated
-        num_speaker_sessions = Session.query(ancestor=c_key). \
-            filter(Session.speaker==data['speaker']). \
-            count(limit=None)
-        
-        # A num_speaker_sessions count greater than 1 will update the
-        # MEMCACHE 
-        if num_speaker_sessions > 1:
-            
-            # This query...all sessions for the conference where this
-            # speaker is speaking
-            speaker_sessions = Session.query(ancestor=c_key). \
-                filter(Session.speaker==data['speaker']). \
-                fetch()
-            conf = c_key.get()
-        
-        speaker_announcement = FEATURED_SPEAKERS_TPL % (
-            conf.name, data['speaker'], ', '.join(speaker_session.name for speaker_session in speaker_sessions))
-        
-        taskqueue.add(params={'announcement': speaker_announcement,
-            'memcache_key': MEMCACHE_CONFERENCE_FEATURED_SPEAKERS_KEY},
-            url='/tasks/set_featured_speaker'
-        )
-        
-        return request
+        return self._copySessionToForm(session)
 
 
     @endpoints.method(SessionForm, SessionForm, path='session',
@@ -699,9 +681,7 @@ class ConferenceApi(remote.Service):
         """Create new session."""
         
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
         
         p_key = ndb.Key(Profile, user_id)
@@ -725,9 +705,7 @@ class ConferenceApi(remote.Service):
         """Return sessions for a conference."""
         
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         
         c_key = ndb.Key(urlsafe=request.websafeConferenceKey)
         
@@ -814,69 +792,68 @@ class ConferenceApi(remote.Service):
         
         wf.check_initialized()
         return wf
+    
 
-    def _updateWishlistObject(self, request, reg=True):
-        """Create or update Wishlist object, returning WishlistForm/request."""
-        
-        # preload necessary data items
-        retval = None
+    def _createWishlistObject(self, request):
+        """Create Wishlist object, returning WishlistForm/request."""
         
         # as usual make sure user is logged in
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
+        user_id = getUserId(user)
+
+        data = {field.name: getattr(request, field.name) for field in request.all_fields()}
+            
+        sess  = ndb.Key(urlsafe=request.websafeSessionKey).get()
+        p_key = ndb.Key(Profile, user_id)
+            
+        q = Wishlist.query(ancestor=p_key). \
+                filter(Wishlist.websafeSessionKey==request.websafeSessionKey).get()
+
+        if q:
+            raise endpoints.BadRequestException('Session already in Wishlist')
+
+        data['sessionName'] = sess.name
+        data['userId'] = user_id
+        data['duration'] = sess.duration
+            
+        # create Wishlist key with logged in user as the parent
+        w_id = Wishlist.allocate_ids(size=1, parent=p_key)[0]          
+        w_key = ndb.Key(Wishlist, w_id, parent=p_key)
+            
+        data['key'] = w_key
+            
+        # create Wishlist entry
+        wishlist = Wishlist(**data)
+        wishlist.put()
+        
+        return self._copyWishlistToForm(wishlist)
+        
+    def _deleteWishlistObject (self, request):
+        """ Delete Wishlist entry """
+
+        # as usual make sure user is logged in
+        user = self._getAuthUser()
         
         user_id = getUserId(user)
 
-        if reg:
-            data = {field.name: getattr(request, field.name) for field in request.all_fields()}
+        # Find the Wishlist Session record for the user
+        q = Wishlist.query(ancestor=ndb.Key(Profile, user_id)). \
+            filter(Wishlist.websafeSessionKey==request.websafeSessionKey). \
+            get() 
             
-            sess  = ndb.Key(urlsafe=request.websafeSessionKey).get()
-            p_key = ndb.Key(Profile, user_id)
-            
-            q = Wishlist.query(ancestor=p_key). \
-                    filter(Wishlist.websafeSessionKey==request.websafeSessionKey).get()
-
-            if q:
-                raise endpoints.BadRequestException('Session already in Wishlist')
-
-            data['sessionName'] = sess.name
-            data['userId'] = user_id
-            data['duration'] = sess.duration
-            
-            # create Wishlist key with logged in user as the parent
-            w_id = Wishlist.allocate_ids(size=1, parent=p_key)[0]          
-            w_key = ndb.Key(Wishlist, w_id, parent=p_key)
-            
-            data['key'] = w_key
-            
-            # create Wishlist entry
-            Wishlist(**data).put()
-            retVal = True
-
-        else:
-            # Find the Wishlist Session record for the user
-            q = Wishlist.query(ancestor=ndb.Key(Profile, user_id)). \
-                filter(Wishlist.websafeSessionKey==request.websafeSessionKey). \
-                get() 
-            
-            # only if it is found should we delete it 
-            if q:
-                q.key.delete()
-                retVal = True
-            else:        
-                retVal = False  
-
-        return BooleanMessage(data=retval)
+        # only if it is found should we delete it 
+        if q:
+            q.key.delete()
         
- 
-    @endpoints.method(WISHLIST_GET_REQUEST, BooleanMessage, path='wishlist',
+        return BooleanMessage(data=True)
+
+    
+    @endpoints.method(WISHLIST_GET_REQUEST, WishlistForm, path='wishlist',
             http_method='POST', name='addSessionToWishlist')
     def addSessionToWishlist(self, request):
         """Create new wishlist entry."""
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        
+        user = self._getAuthUser()
         user_id = getUserId(user)
         
         p_key = ndb.Key(Profile, user_id)
@@ -899,7 +876,7 @@ class ConferenceApi(remote.Service):
             raise endpoints.NotFoundException(
                 'No session found with key: %s' % request.websafeSessionKey)
         
-        return self._updateWishlistObject(request)
+        return self._createWishlistObject(request)
 
 
     @endpoints.method(WISHLIST_GET_REQUEST, BooleanMessage, path='wishlist',
@@ -907,9 +884,7 @@ class ConferenceApi(remote.Service):
     def deleteSessionToWishlist(self, request):
         """Delete wishlist entry."""
         
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
         
         p_key = ndb.Key(Profile, user_id)
@@ -932,7 +907,7 @@ class ConferenceApi(remote.Service):
             raise endpoints.NotFoundException(
                 'No session found with key: %s' % request.websafeSessionKey)
         
-        return self._updateWishlistObject(request, reg = False)
+        return self._deleteWishlistObject(request)
     
     @endpoints.method(message_types.VoidMessage, WishlistForms, 
         path='wishlist/sessions',
@@ -940,9 +915,7 @@ class ConferenceApi(remote.Service):
     def getSessionsInWishlist(self, request):
         """Get all Wishlist entries for the user."""
         
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
         
         # create ancestor query for all key matches for this user
@@ -961,9 +934,7 @@ class ConferenceApi(remote.Service):
         """Locate all wishlist entries where the duration is equal or longer
            than the requested duration"""
         
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
         
         # create ancestor query for all key matches for this user
@@ -993,12 +964,41 @@ class ConferenceApi(remote.Service):
         sf.check_initialized()
         return sf
 
+    def _createSpeakerObject(self, request):
+        """Create Speaker object, returning SpeakerForm/request."""
+        
+        user = self._getAuthUser()
+        user_id = getUserId(user)
+
+        if not request.name:
+            raise endpoints.BadRequestException("Speaker 'name' field required")
+
+        if not request.email:
+            raise endpoints.BadRequestException("Speaker 'email' field required")
+
+        # copy SpeakerForm/ProtoRPC Message into dict
+        data = {field.name: getattr(request, field.name) for field in request.all_fields()}
+        
+        # create Speaker key
+        sp_id = Speaker.allocate_ids(size=1)[0]
+        sp_key = ndb.Key(Speaker, sp_id)
+        
+        # assign the Speaker key
+        data['key'] = sp_key
+        
+        del data['websafeKey']
+        
+        # create Speaker
+        speaker = Speaker(**data)
+        speaker.put()
+        
+        return self._copySpeakerToForm(speaker)
+
+
     def _updateSpeakerObject(self, request):
         """Update Speaker object, returning SpeakerForm/request."""
         
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getAuthUser()
         user_id = getUserId(user)
 
         # copy SpeakerForm/ProtoRPC Message into dict
@@ -1025,6 +1025,19 @@ class ConferenceApi(remote.Service):
         
         return self._copySpeakerToForm(speaker)
 
+
+    @endpoints.method(SpeakerForm, SpeakerForm, path='speaker',
+            http_method='POST', name='createSpeaker')
+    def createSpeaker(self, request):
+        """Create new speaker."""
+        
+        # make sure user is authed
+        user = self._getAuthUser()
+        user_id = getUserId(user)
+        
+        return self._createSpeakerObject(request)
+
+
     @endpoints.method(SPEAKER_POST_REQUEST, SpeakerForm,
             path='speaker/{websafeSpeakerKey}',
             http_method='PUT', name='updateSpeaker')
@@ -1039,10 +1052,9 @@ class ConferenceApi(remote.Service):
         """Return all speakers."""
         
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
-        
+        user = self._getAuthUser()
+        user_id = getUserId(user)
+
         speakers = Speaker.query()
         
         return SpeakerForms(
@@ -1054,7 +1066,8 @@ class ConferenceApi(remote.Service):
             http_method='GET', name='getFeaturedSpeaker')
     def getFeaturedSpeaker(self, request):
         """Return Announcement from memcache."""
-        return StringMessage(data=memcache.get(MEMCACHE_CONFERENCE_FEATURED_SPEAKERS_KEY) or "")
+        return StringMessage(data= \
+            memcache.get(MEMCACHE_CONFERENCE_FEATURED_SPEAKERS_KEY) or "")
 
 
 api = endpoints.api_server([ConferenceApi]) # register API
